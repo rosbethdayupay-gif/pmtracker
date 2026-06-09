@@ -1441,13 +1441,7 @@ CREATE POLICY "Public Access" ON storage.objects FOR ALL USING (bucket_id = 'iss
           <label class="form-label">Category Filter</label>
           <select class="form-control" id="r-cat-filter" onchange="updateReportPreview()">
             <option value="all">All categories</option>
-            <option>Door / Hardware</option><option>General / Other</option>
-            <option>HVAC / Mechanical</option><option>Plumbing / Fixtures</option>
-            <option>HK / Cleaning</option><option>Water / Leak</option>
-            <option>Electrical / Lighting</option><option>Pool / Equipment</option>
-            <option>Paint / Touch-up</option><option>Rust / Corrosion</option>
-            <option>Soft Furnishings</option><option>Pest / Odour</option>
-            <option>Furniture</option>
+            <option>Maintenance</option><option>Housekeeping</option><option>Other</option>
           </select>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
@@ -1605,7 +1599,8 @@ const UNIT_MAP = {
   'R1': ['R1'], 'R2': ['R2'], 'R3': ['R3'],
   'R5': ['R5'], 'R6': ['R6'], 'R7': ['R7'], 'R8': ['R8'], 'R9': ['R9'],
 };
-const PROPERTIES = ['Building A','Building B','Building C','R1','R2','R3','R4','R5','R6','R7','R8','R9'];
+const PROPERTIES = ['Building A','Building B','Building C','Residences'];
+const RESIDENCE_UNITS = ['R1','R2','R3','R4','R5','R6','R7','R8','R9'];
 
 let sbClient = null;
 let allIssues = [];
@@ -1743,7 +1738,9 @@ function filteredIssues() {
   const q = (document.getElementById('search')?.value || '').toLowerCase();
   return allIssues.filter(i => {
     if (i.status === 'Cancelled') return false;
-    const matchProp = activeFilter === 'All' || i.property === activeFilter;
+    const matchProp = activeFilter === 'All'
+      || i.property === activeFilter
+      || (activeFilter === 'Residences' && RESIDENCE_UNITS.includes(i.unit_location));
     const matchCat  = activeCatFilter === 'all' || i.category === activeCatFilter;
     const matchQ = !q || [i.description, i.unit_location, i.category, i.inspector, i.property]
       .some(v => v && v.toLowerCase().includes(q));
@@ -1785,7 +1782,11 @@ function renderIssues() {
     // group by property
     container.innerHTML = '';
     PROPERTIES.forEach(prop => {
-      const propIssues = issues.filter(i => i.property === prop);
+      const propIssues = issues.filter(i =>
+        prop === 'Residences'
+          ? RESIDENCE_UNITS.includes(i.unit_location)
+          : i.property === prop
+      );
       if (!propIssues.length) return;
       const openI = propIssues.filter(i => i.status === 'Open');
       const invI  = propIssues.filter(i => i.status === 'Needs Further Investigation');
@@ -2747,7 +2748,11 @@ function buildCatSummary() {
 }
 
 function filteredByProperty() {
-  return allIssues.filter(i => i.status !== 'Cancelled' && (activeFilter === 'All' || i.property === activeFilter));
+  return allIssues.filter(i => i.status !== 'Cancelled' && (
+    activeFilter === 'All'
+    || i.property === activeFilter
+    || (activeFilter === 'Residences' && RESIDENCE_UNITS.includes(i.unit_location))
+  ));
 }
 
 // ── COMMENTS ─────────────────────────────────────────────────
@@ -3378,6 +3383,783 @@ function generateOwnerReport() {
   const blob = new Blob([reportHTML], {type:'text/html'});
   window.open(URL.createObjectURL(blob), '_blank');
 }
+
+// ══════════════════════════════════════════════════════════════
+// CHECKLIST MODULE v2 — paginated, auto-saved, item-level P/I/N
+// ══════════════════════════════════════════════════════════════
+
+const S1_SECTIONS = [
+  { key:'mechanical_room', label:'Mechanical Room', category:'Pool / Equipment',
+    items:[
+      { key:'pool_pump',       label:'Pool Pump',                       hint:'Functional? No leaks?' },
+      { key:'pool_heater',     label:'Pool Heater',                     hint:'Turned OFF? Functional? No leaks?' },
+      { key:'pool_filter',     label:'Pool Filter / Pressure Gauge',    hint:'Functional? Set to 15 psi?' },
+      { key:'chlorinator',     label:'Chlorinator',                     hint:'No error code?' },
+      { key:'water_heater',    label:'Water Heater',                    hint:'Set to 125°F? Functional? No leaks?' },
+      { key:'ac_condenser',    label:'AC Condenser',                    hint:'Any leaks or unusual noise? Any damages?' },
+    ]
+  },
+  { key:'s1_structures', label:'S1 Structures', category:'General / Other',
+    items:[
+      { key:'main_door',       label:'Wooden Main Door',                hint:'' },
+      { key:'door_frame',      label:'Main Door Frame',                 hint:'' },
+      { key:'lockset',         label:'Salto / Lockset',                 hint:'' },
+      { key:'handrails',       label:'Staircase Handrails',             hint:'Any corrosion?' },
+      { key:'step_lights',     label:'Step Lights / Fixtures',          hint:'' },
+      { key:'pests',           label:'Pests / Insects',                 hint:'Check for wasp nests, ants, termites, flies' },
+      { key:'wood_railings',   label:'Wooden Railings',                 hint:'' },
+      { key:'pergola',         label:'Pergola',                         hint:'' },
+      { key:'poly_roofing',    label:'Polycarbonate Roofing',           hint:'' },
+    ]
+  },
+  { key:'s1_entrance', label:'S1 Entrance', category:'General / Other', special:'ac',
+    items:[
+      { key:'door_lockset',    label:'Door / Salto / Lockset',          hint:'' },
+      { key:'door_frame',      label:'Door Frame',                      hint:'' },
+      { key:'lights',          label:'Lights / Switches Configuration', hint:'' },
+      { key:'ceiling',         label:'Ceiling Finish',                  hint:'Cracks, scuffs, need paint touchup?' },
+      { key:'wall',            label:'Wall Finish',                     hint:'Cracks, scuffs, need paint touchup?' },
+      { key:'floor',           label:'Floor',                           hint:'Any stains, cracks, or scratches?' },
+    ]
+  },
+  { key:'powder_room', label:'Powder Room', category:'Plumbing / Fixtures',
+    items:[
+      { key:'door',            label:'Door / Lockset',                  hint:'' },
+      { key:'door_frame',      label:'Door Frame',                      hint:'' },
+      { key:'lights',          label:'Lights / Switch',                 hint:'' },
+      { key:'vanity',          label:'Vanity / Mirror',                 hint:'' },
+      { key:'faucet',          label:'Faucet',                          hint:'' },
+      { key:'sink',            label:'Sink / Drain',                    hint:'' },
+      { key:'toilet',          label:'Toilet — Flush',                  hint:'' },
+      { key:'exhaust',         label:'Exhaust Fan',                     hint:'' },
+      { key:'towel_rod',       label:'Towel Rod / Hooks',               hint:'' },
+      { key:'ceiling',         label:'Ceiling Finish',                  hint:'' },
+      { key:'wall',            label:'Wall Finish',                     hint:'' },
+      { key:'floor',           label:'Floor Tiles',                     hint:'' },
+      { key:'odor',            label:'Odor Check',                      hint:'No sewage or strong foul smells?' },
+    ]
+  },
+  { key:'main_bed_entrance', label:'Main Bedroom Entrance', category:'Door / Hardware',
+    items:[
+      { key:'door',            label:'Door / Lockset',                  hint:'' },
+      { key:'door_frame',      label:'Door Frame',                      hint:'' },
+      { key:'lights',          label:'Lights / Switch',                 hint:'' },
+      { key:'mirror',          label:'Mirror',                          hint:'' },
+      { key:'ceiling',         label:'Ceiling Finish',                  hint:'' },
+      { key:'wall',            label:'Wall Finish',                     hint:'' },
+      { key:'floor',           label:'Floor Tiles',                     hint:'' },
+    ]
+  },
+  { key:'main_bathroom', label:'Main Bathroom', category:'Plumbing / Fixtures',
+    items:[
+      { key:'lights',          label:'Lights / Switches Configuration', hint:'' },
+      { key:'fixtures',        label:'Light Fixtures',                  hint:'' },
+      { key:'mirrors',         label:'Mirrors',                         hint:'' },
+      { key:'faucet',          label:'Faucet',                          hint:'' },
+      { key:'sink',            label:'Sink / Drain',                    hint:'' },
+      { key:'cabinets',        label:'Cabinets / Drawers',              hint:'' },
+      { key:'shower_frame',    label:'Shower Frame',                    hint:'' },
+      { key:'shower_cement',   label:'Shower Microcement',              hint:'' },
+      { key:'shower_mixer',    label:'Shower Mixer / Handheld Shower',  hint:'' },
+      { key:'toilet',          label:'Toilet — Flush',                  hint:'' },
+      { key:'exhaust',         label:'Exhaust Fan',                     hint:'' },
+      { key:'toilet_door',     label:'Toilet Door',                     hint:'' },
+      { key:'toilet_ceiling',  label:'Toilet Area — Ceiling & Wall',    hint:'' },
+      { key:'toilet_floor',    label:'Toilet Area — Floor Tiles',       hint:'' },
+      { key:'towel_hooks',     label:'Towel Hooks',                     hint:'' },
+      { key:'ceiling',         label:'Ceiling Finish',                  hint:'' },
+      { key:'wall',            label:'Wall Finish',                     hint:'' },
+      { key:'floor',           label:'Floor Tiles',                     hint:'' },
+      { key:'odor',            label:'Odor Check',                      hint:'No sewage or strong foul smells?' },
+    ]
+  },
+  { key:'main_bed_electrical', label:'Main Bedroom & Terrace — Electrical', category:'Electrical / Lighting',
+    items:[
+      { key:'bed_lights',      label:'Bedroom Lights / Switches',       hint:'' },
+      { key:'bed_labels',      label:'Bedroom Switch Labels',           hint:'' },
+      { key:'ter_lights',      label:'Terrace Lights / Switches',       hint:'' },
+      { key:'ter_labels',      label:'Terrace Switch Labels',           hint:'' },
+      { key:'bed_fan',         label:'Bedroom Ceiling Fan',             hint:'' },
+      { key:'ter_fan',         label:'Terrace Ceiling Fan',             hint:'' },
+      { key:'bed_tv',          label:'Bedroom TV',                      hint:'' },
+      { key:'bed_sound',       label:'Bedroom Soundbar',                hint:'' },
+      { key:'ter_tv',          label:'Terrace Outdoor TV',              hint:'' },
+      { key:'ter_sound',       label:'Terrace Soundbar',                hint:'' },
+    ]
+  },
+  { key:'main_bed_furniture', label:'Main Bedroom — Furniture & Finishes', category:'Furniture',
+    items:[
+      { key:'closet',          label:'Closet / Closet Lights',          hint:'' },
+      { key:'safe',            label:'Safe',                            hint:'No error code? Missing?' },
+      { key:'furniture',       label:'Furniture / Bedside Tables',      hint:'' },
+      { key:'dresser',         label:'Dresser',                         hint:'' },
+      { key:'ceiling',         label:'Ceiling Finish',                  hint:'' },
+      { key:'wall',            label:'Wall Finish',                     hint:'' },
+      { key:'floor',           label:'Floor Tiles',                     hint:'' },
+      { key:'curtains',        label:'Curtains / Drapes',               hint:'' },
+      { key:'sliding_door',    label:'Sliding Door',                    hint:'' },
+    ]
+  },
+  { key:'terrace', label:'Terrace', category:'General / Other',
+    items:[
+      { key:'furniture',       label:'Outdoor Furniture',               hint:'' },
+      { key:'shower',          label:'Outdoor Shower',                  hint:'' },
+      { key:'tub',             label:'Outdoor Tub',                     hint:'' },
+      { key:'fixtures',        label:'Outdoor Fixtures',                hint:'Any corrosion?' },
+      { key:'pests',           label:'Pests / Insects',                 hint:'Check for wasp nests, ants, termites, flies' },
+      { key:'pergola',         label:'Pergola',                         hint:'' },
+      { key:'wall',            label:'Wall Finish',                     hint:'' },
+      { key:'floor',           label:'Floor Tiles',                     hint:'Any cracks? Need patching up?' },
+    ]
+  },
+  { key:'pool', label:'Pool Area', category:'Pool / Equipment',
+    items:[
+      { key:'cleanliness',     label:'Pool Cleanliness',                hint:'' },
+      { key:'water_level',     label:'Pool Water Level',                hint:'' },
+      { key:'tiles',           label:'Pool Tiles',                      hint:'Any calcium buildup?' },
+    ]
+  },
+  { key:'hallway_laundry', label:'Hallway / Laundry Area', category:'General / Other',
+    items:[
+      { key:'washer',          label:'Washer',                          hint:'' },
+      { key:'dryer',           label:'Dryer',                           hint:'' },
+      { key:'ceiling',         label:'Ceiling Finish',                  hint:'' },
+      { key:'wall',            label:'Wall Finish',                     hint:'' },
+      { key:'floor',           label:'Floor Tiles',                     hint:'' },
+    ]
+  },
+  { key:'kitchen_appliances', label:'Kitchen — Appliances', category:'General / Other',
+    items:[
+      { key:'microwave',       label:'Microwave',                       hint:'' },
+      { key:'oven',            label:'Oven',                            hint:'' },
+      { key:'extractor',       label:'Extractor Fan & Light',           hint:'' },
+      { key:'stove',           label:'Induction Stove',                 hint:'' },
+      { key:'dishwasher',      label:'Dishwasher',                      hint:'' },
+      { key:'coffee',          label:'Coffee Machine',                  hint:'' },
+      { key:'fridge',          label:'Fridge',                          hint:'Cooling? Set Temp 38°F' },
+      { key:'freezer',         label:'Freezer',                         hint:'Cooling? Set to 0°F' },
+      { key:'ice_maker',       label:'Ice Maker',                       hint:'Making ice? Set to 0°F' },
+      { key:'subzero',         label:'SubZero Fridge',                  hint:'Cooling? Temp range 37°F–41°F' },
+      { key:'wine_fridge',     label:'Wine Fridge',                     hint:'Cooling? Temp range 46°F–66°F' },
+    ]
+  },
+  { key:'kitchen_furniture', label:'Kitchen — Furniture & Finishes', category:'General / Other',
+    items:[
+      { key:'lights',          label:'Kitchen Lights / Switches',       hint:'' },
+      { key:'labels',          label:'Switch Labels',                   hint:'' },
+      { key:'pendant',         label:'Kitchen Pendant Light',           hint:'' },
+      { key:'countertops',     label:'Countertops',                     hint:'' },
+      { key:'cupboards',       label:'Cupboards / Drawers',             hint:'' },
+      { key:'ceiling_wall',    label:'Ceiling & Wall Finish',           hint:'' },
+      { key:'floor',           label:'Floor Tiles',                     hint:'' },
+    ]
+  },
+  { key:'living_room', label:'Living Room', category:'General / Other',
+    items:[
+      { key:'lights',          label:'Lights / Switches Configuration', hint:'' },
+      { key:'labels',          label:'Switch Labels',                   hint:'' },
+      { key:'fan',             label:'Ceiling Fan',                     hint:'' },
+      { key:'tv',              label:'TV',                              hint:'' },
+      { key:'soundbar',        label:'Soundbar',                        hint:'' },
+      { key:'furniture',       label:'Furniture',                       hint:'' },
+      { key:'curtains',        label:'Curtains / Drapes',               hint:'Any detached hooks or pulled threads?' },
+      { key:'sliding_door',    label:'Sliding Door',                    hint:'Closing properly?' },
+      { key:'ceiling',         label:'Ceiling Finish',                  hint:'Cracks, scuffs, paint touchup?' },
+      { key:'wall',            label:'Wall Finish',                     hint:'Cracks, scuffs, paint touchup?' },
+      { key:'floor',           label:'Floor Tiles',                     hint:'Any stains, cracks, or scratches?' },
+    ]
+  },
+];
+
+const CHECKLIST_TYPES = { S1: S1_SECTIONS };
+
+let clState = null;
+let clPage  = 0;   // 0=basic info, 1..N=sections, N+1=review
+let clPhotoTarget = null;
+const CL_DRAFT_KEY = type => 'cl_draft_v2_' + type;
+
+// ── DRAFT SAVE / RESTORE ──────────────────────────────────────
+function clSaveDraft() {
+  if (!clState) return;
+  try {
+    // Save state but strip photo blobs (keep dataUrls for display)
+    const toSave = {
+      ...clState,
+      items: Object.fromEntries(
+        Object.entries(clState.items).map(([k,v]) => [k, {
+          status: v.status, notes: v.notes,
+          photoCount: v.photos.length  // just count — blobs can't be stored
+        }])
+      ),
+      acThermostatPhotos: [],  // can't store blobs
+      _page: clPage
+    };
+    localStorage.setItem(CL_DRAFT_KEY(clState.type), JSON.stringify(toSave));
+  } catch(e) { /* quota exceeded — silent */ }
+}
+
+function clLoadDraft(type) {
+  try {
+    const raw = localStorage.getItem(CL_DRAFT_KEY(type));
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { return null; }
+}
+
+function clClearDraft(type) {
+  try { localStorage.removeItem(CL_DRAFT_KEY(type)); } catch(e) {}
+}
+
+// ── RENDER CHECKLISTS TAB ─────────────────────────────────────
+async function renderChecklists() {
+  const container = document.getElementById('checklists-content');
+  container.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:40px;color:var(--text-soft)"><div class="spinner"></div> Loading…</div>';
+  try {
+    const { data, error } = await sbClient.from('checklists').select('*').order('created_at',{ascending:false}).limit(50);
+    if (error) throw error;
+    buildChecklistsView(data || []);
+  } catch(e) { buildChecklistsView([]); }
+}
+
+function buildChecklistsView(records) {
+  const container = document.getElementById('checklists-content');
+  const draft = clLoadDraft('S1');
+  const draftBanner = draft ? `
+    <div style="background:var(--addr-bg);border:1px solid var(--addr-bdr);border-radius:var(--radius);padding:11px 14px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <div>
+        <div style="font-size:13px;font-weight:600;color:var(--addr-text)">Unfinished checklist found</div>
+        <div style="font-size:12px;color:var(--addr-text);opacity:.8;margin-top:2px">${escHtml(draft.unit||'Unknown unit')} · ${escHtml(draft.inspector||'')}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn-sm btn-mark-addr" onclick="resumeChecklist('S1')">Resume</button>
+        <button class="btn-sm" style="background:#fff;border-color:var(--cream-dark);color:var(--text-soft)" onclick="clClearDraft('S1');renderChecklists()">Discard</button>
+      </div>
+    </div>` : '';
+
+  const startBtn = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div>
+        <div style="font-size:16px;font-weight:600;color:var(--text)">Inspection Checklists</div>
+        <div style="font-size:12px;color:var(--text-soft);margin-top:2px">Issues flagged are auto-logged to the tracker on submit</div>
+      </div>
+      <button class="btn btn-primary" onclick="startChecklist('S1')">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        New S1 Checklist
+      </button>
+    </div>`;
+
+  if (!records.length) {
+    container.innerHTML = startBtn + draftBanner + '<div style="text-align:center;padding:60px 20px;color:var(--text-soft)"><div style="font-size:32px;margin-bottom:12px;color:var(--cream-dark)">—</div><div style="font-size:15px;font-weight:500;color:var(--text-mid);margin-bottom:6px">No checklists yet</div></div>';
+    return;
+  }
+  let html = startBtn + draftBanner;
+  records.forEach(r => {
+    const items = r.sections || [];
+    const issueCount = items.filter(i=>i.status==='issues').length;
+    const goodCount  = items.filter(i=>i.status==='good').length;
+    const naCount    = items.filter(i=>i.status==='na').length;
+    const total = items.length;
+    const pct = total ? Math.round((goodCount+naCount)/total*100) : 0;
+    html += `<div class="cl-card" onclick="viewChecklist('${r.id}')">
+      <div class="cl-card-top">
+        <div class="cl-card-unit">${escHtml(r.unit_location)} <span style="font-size:11px;font-weight:400;font-family:inherit;color:var(--text-soft)">${r.checklist_type}</span></div>
+        <div class="cl-card-date">${formatDate(r.date)}</div>
+      </div>
+      <div class="cl-card-meta">${escHtml(r.inspector)} · ${escHtml(r.building)}${r.time_start?' · '+r.time_start:''}</div>
+      <div class="cl-card-badges">
+        ${issueCount?`<span style="font-size:11px;font-weight:500;background:var(--open-bg);color:var(--open-text);padding:2px 8px;border-radius:6px">${issueCount} issue${issueCount>1?'s':''}</span>`:''}
+        <span style="font-size:11px;font-weight:500;background:var(--addr-bg);color:var(--addr-text);padding:2px 8px;border-radius:6px">${goodCount} pass</span>
+        ${naCount?`<span style="font-size:11px;font-weight:500;background:var(--cream-dark);color:var(--text-soft);padding:2px 8px;border-radius:6px">${naCount} N/A</span>`:''}
+        <span style="font-size:11px;font-weight:500;background:var(--cream-dark);color:var(--text-mid);padding:2px 8px;border-radius:6px;margin-left:auto">${pct}% pass</span>
+      </div>
+    </div>`;
+  });
+  container.innerHTML = html;
+}
+
+// ── START / RESUME ────────────────────────────────────────────
+function startChecklist(type) {
+  const sections = CHECKLIST_TYPES[type];
+  const itemState = {};
+  sections.forEach(sec => sec.items.forEach(item => {
+    itemState[sec.key+'__'+item.key] = { status:'', notes:'', photos:[], team:'' };
+  }));
+  clState = {
+    type, inspector:'', building:'', unit:'',
+    date: new Date().toISOString().split('T')[0],
+    timeStart: new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}),
+    items: itemState, acThermostat:'', acThermostatNotes:'', acThermostatPhotos:[],
+    acTemp:'', acMode:''
+  };
+  clPage = 0;
+  openChecklistOverlay();
+}
+
+function resumeChecklist(type) {
+  const draft = clLoadDraft(type);
+  if (!draft) { startChecklist(type); return; }
+  // Rebuild full state from draft (photos lost but statuses/notes restored)
+  const sections = CHECKLIST_TYPES[type];
+  const itemState = {};
+  sections.forEach(sec => sec.items.forEach(item => {
+    const key = sec.key+'__'+item.key;
+    const saved = draft.items?.[key];
+    itemState[key] = { status: saved?.status||'', notes: saved?.notes||'', photos:[], team: saved?.team||'' };
+  }));
+  clState = { ...draft, items: itemState, acThermostatPhotos:[] };
+  clPage = draft._page || 0;
+  openChecklistOverlay();
+}
+
+function openChecklistOverlay() {
+  document.getElementById('cl-overlay').classList.add('open');
+  renderClPage();
+}
+
+function closeChecklist() {
+  clSaveDraft();
+  document.getElementById('cl-overlay').classList.remove('open');
+  showToast('Progress saved — resume from the Checklists tab');
+}
+
+// ── PAGE RENDERING ────────────────────────────────────────────
+function renderClPage() {
+  const sections = CHECKLIST_TYPES[clState.type];
+  const totalPages = sections.length + 2; // 0=info, 1..N=sections, N+1=review
+  const body = document.getElementById('cl-body');
+  body.scrollTop = 0;
+
+  if (clPage === 0) {
+    renderClBasicInfo(body);
+  } else if (clPage <= sections.length) {
+    renderClSection(body, sections[clPage - 1], clPage, sections.length);
+  } else {
+    renderClReview(body, sections);
+  }
+
+  // Update topbar
+  const sec = clPage > 0 && clPage <= sections.length ? sections[clPage-1] : null;
+  document.getElementById('cl-form-title').textContent = clPage === 0 ? 'PM Checklist — Basic Info' : clPage > sections.length ? 'PM Checklist — Review' : `Section ${clPage} of ${sections.length}`;
+  document.getElementById('cl-form-sub').textContent = sec ? sec.label : clPage === 0 ? (clState.inspector||'Fill in details to begin') : 'Ready to submit';
+
+  // Progress bar
+  const allKeys = sections.flatMap(s => s.items.map(i => s.key+'__'+i.key));
+  const done = allKeys.filter(k => clState.items[k]?.status).length;
+  document.getElementById('cl-prog').style.width = Math.round(done/allKeys.length*100)+'%';
+
+  // Footer
+  updateClFooter(sections.length);
+}
+
+function renderClBasicInfo(body) {
+  body.innerHTML = `
+    <div class="cl-section">
+      <div style="padding:14px">
+        <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:14px">Basic Information</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div><label class="form-label">Inspector *</label>
+            <select class="form-control" id="cl-inspector" onchange="clState.inspector=this.value;clSaveDraft()">
+              <option value="">Select…</option>
+              <option ${clState.inspector==='Raymond Williams'?'selected':''}>Raymond Williams</option>
+              <option ${clState.inspector==='Rasky Edades'?'selected':''}>Rasky Edades</option>
+              <option ${clState.inspector==='Dave Pottinger'?'selected':''}>Dave Pottinger</option>
+              <option ${clState.inspector==='Albino Dayupay'?'selected':''}>Albino Dayupay</option>
+            </select></div>
+          <div><label class="form-label">Date *</label>
+            <input type="date" class="form-control" id="cl-date" value="${clState.date}" onchange="clState.date=this.value;clSaveDraft()"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div><label class="form-label">Building *</label>
+            <select class="form-control" id="cl-building" onchange="clState.building=this.value;updateClUnits();clSaveDraft()">
+              <option value="">Select…</option>
+              <option ${clState.building==='Building A'?'selected':''}>Building A</option>
+              <option ${clState.building==='Building B'?'selected':''}>Building B</option>
+              <option ${clState.building==='Building C'?'selected':''}>Building C</option>
+            </select></div>
+          <div><label class="form-label">Unit *</label>
+            <select class="form-control" id="cl-unit" onchange="clState.unit=this.value;clSaveDraft()">
+              <option value="">Select building first</option>
+            </select></div>
+        </div>
+        <div><label class="form-label">Time Start</label>
+          <input type="time" class="form-control" value="${clState.timeStart}" onchange="clState.timeStart=this.value;clSaveDraft()"></div>
+      </div>
+    </div>`;
+  // Restore building/unit selections
+  if (clState.building) {
+    const bSel = document.getElementById('cl-building');
+    if (bSel) { bSel.value = clState.building; updateClUnits(); }
+    setTimeout(() => {
+      const uSel = document.getElementById('cl-unit');
+      if (uSel && clState.unit) uSel.value = clState.unit;
+    }, 50);
+  }
+}
+
+function renderClSection(body, sec, pageNum, totalSections) {
+  const allKeys = Object.keys(clState.items).filter(k => k.startsWith(sec.key+'__'));
+  const done    = allKeys.filter(k => clState.items[k].status).length;
+  const issues  = allKeys.filter(k => clState.items[k].status === 'issues').length;
+
+  let html = `<div class="cl-section">`;
+
+  // Section summary strip
+  html += `<div style="padding:10px 14px 8px;background:var(--cream);border-bottom:0.5px solid var(--cream-dark);display:flex;align-items:center;justify-content:space-between">
+    <div style="font-size:13px;font-weight:600;color:var(--text)">${escHtml(sec.label)}</div>
+    <div style="font-size:12px;color:var(--text-soft)" id="clsec-status-${sec.key}">${done} of ${sec.items.length} · ${issues} issue${issues!==1?'s':''}</div>
+  </div>`;
+
+  // AC special fields
+  if (sec.special === 'ac') {
+    html += `<div style="padding:12px 14px;background:#fafaf8;border-bottom:0.5px solid var(--cream-dark)">
+      <div style="font-size:12px;font-weight:600;color:var(--text-mid);margin-bottom:6px">AC Thermostat</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px">
+        ${['Responsive & No Error Code','Unresponsive','Operation Lock','Other'].map(v=>
+          `<button class="cl-radio${clState.acThermostat===v?' sel':''}" onclick="clSetAcThermostat('${v}',this)">${v}</button>`
+        ).join('')}
+      </div>
+      <div id="cl-ac-other-wrap" style="display:${clState.acThermostat==='Other'?'block':'none'};margin-bottom:4px">
+        <textarea class="form-control" placeholder="Describe the thermostat issue…" style="min-height:52px;font-size:13px;margin-bottom:6px" oninput="clState.acThermostatNotes=this.value;clSaveDraft()">${escHtml(clState.acThermostatNotes||'')}</textarea>
+        <div style="font-size:12px;color:var(--text-soft);margin-bottom:4px">Photos</div>
+        <div class="cl-photo-row" id="clphotos-ac-thermostat">
+          <button class="cl-add-photo" onclick="clOpenCameraPhoto('ac-thermostat')" title="Take photo">+</button>
+        </div>
+      </div>
+      <div style="height:1px;background:var(--cream-dark);margin:10px 0 8px"></div>
+      <div style="font-size:12px;font-weight:600;color:var(--text-mid);margin-bottom:6px">AC Temperature — Set to 78°F</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">
+        ${['Already set','Adjusted','Operation Lock','Unresponsive','Error Code'].map(v=>
+          `<button class="cl-radio${clState.acTemp===v?' sel':''}" onclick="clSetAcTemp('${v}',this)">${v}</button>`
+        ).join('')}
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--text-mid);margin-bottom:6px">AC Mode — Set to Dry</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px">
+        ${['Already set','Adjusted','Operation Lock','Unresponsive','Error Code'].map(v=>
+          `<button class="cl-radio${clState.acMode===v?' sel':''}" onclick="clSetAcMode('${v}',this)">${v}</button>`
+        ).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Items
+  sec.items.forEach(item => {
+    const ikey = sec.key+'__'+item.key;
+    const st   = clState.items[ikey];
+    html += `
+      <div class="cl-item-row" id="clrow-${ikey}">
+        <div class="cl-item-main">
+          <div class="cl-item-label">${escHtml(item.label)}${item.hint?`<span class="cl-item-hint"> — ${escHtml(item.hint)}</span>`:''}
+          </div>
+          <div class="cl-item-btns">
+            <button class="cl-btn${st.status==='good'?' good':''}"   id="clb-${ikey}-good"   onclick="clItemStatus('${ikey}','${sec.key}','good')">Pass</button>
+            <button class="cl-btn${st.status==='issues'?' issues':''}" id="clb-${ikey}-issues" onclick="clItemStatus('${ikey}','${sec.key}','issues')">Issue</button>
+            <button class="cl-btn${st.status==='na'?' na':''}"     id="clb-${ikey}-na"     onclick="clItemStatus('${ikey}','${sec.key}','na')">N/A</button>
+          </div>
+        </div>
+        <div class="cl-item-issue-body${st.status==='issues'?' open':''}" id="cliissue-${ikey}">
+          <textarea class="form-control" placeholder="Describe the issue…" style="min-height:52px;font-size:13px;margin-bottom:6px" oninput="clState.items['${ikey}'].notes=this.value;clSaveDraft()">${escHtml(st.notes||'')}</textarea>
+          <div style="font-size:11px;color:var(--open-text);margin-bottom:4px;font-weight:500">Photos of issue</div>
+          <div class="cl-photo-row" id="clphotos-${ikey}">
+            <button class="cl-add-photo" onclick="clOpenCameraPhoto('${ikey}')" title="Take photo" style="font-size:14px">&#9679;</button>
+          </div>
+        </div>
+      </div>`;
+  });
+  html += `</div>`;
+  body.innerHTML = html;
+}
+
+function renderClReview(body, sections) {
+  const allKeys = sections.flatMap(s => s.items.map(i => s.key+'__'+i.key));
+  const total   = allKeys.length;
+  const pass    = allKeys.filter(k => clState.items[k]?.status==='good').length;
+  const issues  = allKeys.filter(k => clState.items[k]?.status==='issues').length;
+  const na      = allKeys.filter(k => clState.items[k]?.status==='na').length;
+  const blank   = allKeys.filter(k => !clState.items[k]?.status).length;
+
+  let html = `
+    <div style="background:#fff;border:0.5px solid var(--cream-dark);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:12px">
+      <div style="padding:12px 14px;background:var(--cream);border-bottom:0.5px solid var(--cream-dark)">
+        <div style="font-size:15px;font-weight:600">Review before submitting</div>
+        <div style="font-size:12px;color:var(--text-soft);margin-top:2px">${clState.unit} · ${clState.inspector} · ${formatDate(clState.date)}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-bottom:0.5px solid var(--cream-dark)">
+        <div style="padding:10px 12px;text-align:center;border-right:0.5px solid var(--cream-dark)"><div style="font-size:18px;font-weight:500;color:var(--addr-text)">${pass}</div><div style="font-size:11px;color:var(--text-soft)">Pass</div></div>
+        <div style="padding:10px 12px;text-align:center;border-right:0.5px solid var(--cream-dark)"><div style="font-size:18px;font-weight:500;color:var(--open-text)">${issues}</div><div style="font-size:11px;color:var(--text-soft)">Issues</div></div>
+        <div style="padding:10px 12px;text-align:center;border-right:0.5px solid var(--cream-dark)"><div style="font-size:18px;font-weight:500;color:var(--text-soft)">${na}</div><div style="font-size:11px;color:var(--text-soft)">N/A</div></div>
+        <div style="padding:10px 12px;text-align:center"><div style="font-size:18px;font-weight:500;color:${blank?'var(--esc-text)':'var(--text-soft)'}">${blank}</div><div style="font-size:11px;color:var(--text-soft)">Unmarked</div></div>
+      </div>
+      ${blank>0?`<div style="padding:8px 14px;background:var(--esc-bg);font-size:12px;color:var(--esc-text)">${blank} item${blank>1?'s':''} not yet marked — you can still submit</div>`:''}
+    </div>`;
+
+  sections.forEach(sec => {
+    const secKeys   = sec.items.map(i => sec.key+'__'+i.key);
+    const secIssues = secKeys.filter(k => clState.items[k]?.status==='issues').length;
+    const secPass   = secKeys.filter(k => clState.items[k]?.status==='good').length;
+    const secNa     = secKeys.filter(k => clState.items[k]?.status==='na').length;
+    const secBlank  = secKeys.filter(k => !clState.items[k]?.status).length;
+    html += `
+      <div style="background:#fff;border:0.5px solid var(--cream-dark);border-radius:var(--radius-lg);margin-bottom:8px;overflow:hidden">
+        <div style="padding:9px 14px;display:flex;align-items:center;justify-content:space-between;background:var(--cream)">
+          <div style="font-size:13px;font-weight:600;color:var(--text)">${escHtml(sec.label)}</div>
+          <div style="display:flex;gap:5px">
+            ${secIssues?`<span style="font-size:11px;font-weight:500;background:var(--open-bg);color:var(--open-text);padding:2px 7px;border-radius:4px">${secIssues} issue${secIssues>1?'s':''}</span>`:''}
+            <span style="font-size:11px;font-weight:500;background:var(--addr-bg);color:var(--addr-text);padding:2px 7px;border-radius:4px">${secPass} pass</span>
+            ${secBlank?`<span style="font-size:11px;font-weight:500;background:var(--esc-bg);color:var(--esc-text);padding:2px 7px;border-radius:4px">${secBlank} left</span>`:''}
+          </div>
+        </div>
+        ${secIssues ? sec.items.filter(i=>clState.items[sec.key+'__'+i.key]?.status==='issues').map(i=>`
+          <div style="padding:7px 14px;border-top:0.5px solid var(--open-bdr);background:var(--open-bg);font-size:12px;color:var(--open-text);display:flex;align-items:flex-start;gap:6px">
+            <span style="font-weight:600;flex-shrink:0">Issue:</span>
+            <span>${escHtml(i.label)}${clState.items[sec.key+'__'+i.key].notes?' — '+escHtml(clState.items[sec.key+'__'+i.key].notes):''}</span>
+          </div>`).join('') : ''}
+      </div>`;
+  });
+  body.innerHTML = html;
+}
+
+function updateClFooter(totalSections) {
+  const footer = document.getElementById('cl-footer');
+  footer.classList.add('visible');
+  const allKeys  = CHECKLIST_TYPES[clState.type].flatMap(s=>s.items.map(i=>s.key+'__'+i.key));
+  const issues   = allKeys.filter(k=>clState.items[k]?.status==='issues').length;
+  document.getElementById('cl-issues-count').textContent = issues;
+
+  const isReview = clPage > totalSections;
+  const isFirst  = clPage === 0;
+  document.getElementById('cl-remain').textContent = isReview ? 'Review all sections before submitting' : '';
+
+  // Update submit button label
+  const btn = document.getElementById('cl-submit-btn');
+  if (isReview) {
+    btn.style.display = '';
+    btn.textContent = 'Submit Checklist';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+// ── NAVIGATION ────────────────────────────────────────────────
+function clNextPage() {
+  const sections = CHECKLIST_TYPES[clState.type];
+  if (clPage === 0) {
+    if (!clState.inspector||!clState.building||!clState.unit) {
+      showToast('Please fill in inspector, building and unit','error'); return;
+    }
+  }
+  clPage++;
+  clSaveDraft();
+  renderClPage();
+}
+
+function clPrevPage() {
+  if (clPage > 0) { clPage--; clSaveDraft(); renderClPage(); }
+}
+
+// ── ITEM STATUS ───────────────────────────────────────────────
+function clSetTeam(ikey, team) {
+  if (!clState.items[ikey]) return;
+  const cur = clState.items[ikey].team;
+  clState.items[ikey].team = cur === team ? '' : team;
+  // Update button styles
+  const mtBtn = document.getElementById('clteam-'+ikey+'-mt');
+  const hkBtn = document.getElementById('clteam-'+ikey+'-hk');
+  const otBtn = document.getElementById('clteam-'+ikey+'-ot');
+  if (mtBtn) { mtBtn.classList.remove('issues','good','na'); if (clState.items[ikey].team === 'Maintenance') mtBtn.classList.add('issues'); }
+  if (hkBtn) { hkBtn.classList.remove('issues','good','na'); if (clState.items[ikey].team === 'Housekeeping') hkBtn.classList.add('good'); }
+  if (otBtn) { otBtn.classList.remove('issues','good','na'); if (clState.items[ikey].team === 'Other') otBtn.classList.add('na'); }
+  clSaveDraft();
+}
+
+function clItemStatus(ikey, secKey, status) {
+  const cur = clState.items[ikey].status;
+  const newStatus = cur === status ? '' : status;
+  clState.items[ikey].status = newStatus;
+  ['good','issues','na'].forEach(s => {
+    const btn = document.getElementById(`clb-${ikey}-${s}`);
+    if (btn) { btn.classList.remove('good','issues','na'); if(s===newStatus) btn.classList.add(s); }
+  });
+  const issueBody = document.getElementById('cliissue-'+ikey);
+  if (issueBody) issueBody.classList.toggle('open', newStatus==='issues');
+  const sec = CHECKLIST_TYPES[clState.type].find(s=>s.key===secKey);
+  if (sec) {
+    const keys = sec.items.map(i=>secKey+'__'+i.key);
+    const done = keys.filter(k=>clState.items[k]?.status).length;
+    const iss  = keys.filter(k=>clState.items[k]?.status==='issues').length;
+    const el = document.getElementById('clsec-status-'+secKey);
+    if (el) el.textContent = `${done} of ${sec.items.length} · ${iss} issue${iss!==1?'s':''}`;
+  }
+  const allKeys = CHECKLIST_TYPES[clState.type].flatMap(s=>s.items.map(i=>s.key+'__'+i.key));
+  const done = allKeys.filter(k=>clState.items[k]?.status).length;
+  document.getElementById('cl-prog').style.width = Math.round(done/allKeys.length*100)+'%';
+  const issCount = allKeys.filter(k=>clState.items[k]?.status==='issues').length;
+  document.getElementById('cl-issues-count').textContent = issCount;
+  clSaveDraft();
+}
+
+function clSetAcThermostat(val, el) {
+  clState.acThermostat = val;
+  el.closest('div').querySelectorAll('.cl-radio').forEach(b=>b.classList.remove('sel'));
+  el.classList.add('sel');
+  const wrap = document.getElementById('cl-ac-other-wrap');
+  if (wrap) wrap.style.display = val==='Other'?'block':'none';
+  clSaveDraft();
+}
+function clSetAcTemp(val, el) {
+  clState.acTemp = val;
+  el.closest('div').querySelectorAll('.cl-radio').forEach(b=>b.classList.remove('sel'));
+  el.classList.add('sel');
+  clSaveDraft();
+}
+function clSetAcMode(val, el) {
+  clState.acMode = val;
+  el.closest('div').querySelectorAll('.cl-radio').forEach(b=>b.classList.remove('sel'));
+  el.classList.add('sel');
+  clSaveDraft();
+}
+
+function updateClUnits() {
+  const sel = document.getElementById('cl-unit');
+  if (!sel) return;
+  const um = {'Building A':['A1S1','A2S1','A3S1','A4S1','A5S1'],'Building B':['B1S1','B2S1','B3S1','B4S1','B5S1','B6S1','B7S1','B8S1'],'Building C':['C1S1','C2S1','C3S1','C4S1','C5S1','C6S1','C7S1','C8S1','C9S1']};
+  sel.innerHTML = '<option value="">Select unit…</option>'+(um[clState.building]||[]).map(u=>`<option>${u}</option>`).join('');
+}
+
+// ── PHOTO HANDLING ────────────────────────────────────────────
+function clOpenCameraPhoto(target) {
+  clPhotoTarget = target;
+  const input = document.getElementById('cl-camera-input');
+  input.value=''; input.onchange=clHandlePhotos; input.click();
+}
+function clOpenPhoto(ikey) {
+  clPhotoTarget = ikey;
+  const input = document.getElementById('cl-photo-input');
+  input.value=''; input.onchange=clHandlePhotos; input.click();
+}
+async function clHandlePhotos(e) {
+  const files = Array.from(e.target.files);
+  if (!files.length||!clPhotoTarget) return;
+  const ikey = clPhotoTarget;
+  if (ikey==='ac-thermostat') {
+    const container = document.getElementById('clphotos-ac-thermostat');
+    for (const file of files.slice(0,4)) {
+      const compressed = await compressImage(file,900,0.72);
+      const reader = new FileReader();
+      reader.onload = ev => {
+        clState.acThermostatPhotos.push({blob:compressed,dataUrl:ev.target.result});
+        if (container) { const img=document.createElement('img'); img.src=ev.target.result; img.className='cl-photo-thumb'; img.onclick=()=>openLightbox(ev.target.result); container.insertBefore(img,container.lastChild); }
+      };
+      reader.readAsDataURL(compressed);
+    }
+    return;
+  }
+  const container = document.getElementById('clphotos-'+ikey);
+  if (!container||!clState.items[ikey]) return;
+  for (const file of files.slice(0,4)) {
+    const compressed = await compressImage(file,900,0.72);
+    const reader = new FileReader();
+    reader.onload = ev => {
+      clState.items[ikey].photos.push({blob:compressed,dataUrl:ev.target.result});
+      const img=document.createElement('img'); img.src=ev.target.result; img.className='cl-photo-thumb';
+      img.onclick=()=>openLightbox(ev.target.result);
+      container.insertBefore(img,container.lastChild);
+    };
+    reader.readAsDataURL(compressed);
+  }
+}
+
+// ── SUBMIT ────────────────────────────────────────────────────
+async function submitChecklist() {
+  const { inspector, building, unit, date, type } = clState;
+  if (!inspector||!building||!unit) { showToast('Please fill in inspector, building and unit','error'); return; }
+  const sections = CHECKLIST_TYPES[type];
+  const allItems = sections.flatMap(s=>s.items.map(i=>({secKey:s.key,itemKey:i.key,label:i.label,secLabel:s.label,category:s.category})));
+  const btn = document.getElementById('cl-submit-btn');
+  btn.disabled=true; btn.textContent='Uploading photos…';
+  try {
+    const savedItems = [];
+    for (const {secKey,itemKey,label,secLabel,category} of allItems) {
+      const ikey = secKey+'__'+itemKey;
+      const st   = clState.items[ikey];
+      const photoUrls = [];
+      for (const p of st.photos) {
+        const path = `cl-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+        const { error } = await sbClient.storage.from('issue-photos').upload(path,p.blob,{contentType:'image/jpeg'});
+        if (!error) { const {data}=sbClient.storage.from('issue-photos').getPublicUrl(path); photoUrls.push(data.publicUrl); }
+      }
+      savedItems.push({secKey,itemKey,secLabel,label,status:st.status,notes:st.notes,photos:photoUrls,category:st.team||category});
+    }
+    const acThPhotoUrls=[];
+    for (const p of clState.acThermostatPhotos||[]) {
+      const path=`cl-acth-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+      const {error}=await sbClient.storage.from('issue-photos').upload(path,p.blob,{contentType:'image/jpeg'});
+      if (!error) { const {data}=sbClient.storage.from('issue-photos').getPublicUrl(path); acThPhotoUrls.push(data.publicUrl); }
+    }
+    btn.textContent='Saving…';
+    const {error:clErr}=await sbClient.from('checklists').insert([{
+      date,time_start:clState.timeStart,inspector,building,unit_location:unit,
+      checklist_type:type,sections:savedItems,
+      ac_thermostat:clState.acThermostat,ac_thermostat_notes:clState.acThermostatNotes||null,
+      ac_thermostat_photos:acThPhotoUrls,ac_temp:clState.acTemp,ac_mode:clState.acMode,
+      issues_logged:savedItems.filter(i=>i.status==='issues').length
+    }]);
+    if (clErr) throw clErr;
+    btn.textContent='Logging issues…';
+    const issueItems=savedItems.filter(i=>i.status==='issues');
+    await Promise.all(issueItems.map(i=>sbClient.from('issues').insert([{
+      date,property:building,unit_location:unit,
+      description:i.secLabel+' — '+i.label+(i.notes?': '+i.notes:''),
+      category:i.category,status:'Open',inspector,photos:i.photos
+    }])));
+    const {data:newIssues}=await sbClient.from('issues').select('*').order('status',{ascending:true}).order('date',{ascending:false});
+    if (newIssues) { allIssues=newIssues; buildIssueRefMap(); updateStats(); renderIssues(); updateCancelledCount(); }
+    clClearDraft(type);
+    document.getElementById('cl-overlay').classList.remove('open');
+    showToast(`Checklist submitted · ${issueItems.length} issue${issueItems.length!==1?'s':''} logged`,'success');
+    if (document.getElementById('tab-checklists')?.classList.contains('active')) renderChecklists();
+  } catch(e) { showToast('Error: '+e.message,'error'); }
+  finally { btn.disabled=false; btn.textContent='Submit Checklist'; }
+}
+
+// ── VIEW / REPORT ─────────────────────────────────────────────
+async function viewChecklist(id) {
+  try {
+    const {data,error}=await sbClient.from('checklists').select('*').eq('id',id).single();
+    if (error) throw error;
+    generateChecklistReport(data);
+  } catch(e) { showToast('Error: '+e.message,'error'); }
+}
+
+function generateChecklistReport(cl) {
+  const items=cl.sections||[];
+  const issueCount=items.filter(i=>i.status==='issues').length;
+  const goodCount=items.filter(i=>i.status==='good').length;
+  const naCount=items.filter(i=>i.status==='na').length;
+  const total=items.length;
+  const pct=total?Math.round((goodCount+naCount)/total*100):0;
+  const today=new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'long',year:'numeric'});
+  const sectionMap={};
+  items.forEach(i=>{if(!sectionMap[i.secKey])sectionMap[i.secKey]={label:i.secLabel,items:[]};sectionMap[i.secKey].items.push(i);});
+  const statusBadge=s=>{
+    if(s==='good')  return '<span style="background:#E1F5EE;color:#085041;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Pass</span>';
+    if(s==='issues')return '<span style="background:#FCEBEB;color:#A32D2D;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Issue</span>';
+    if(s==='na')    return '<span style="background:#f3f3f1;color:#888;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">N/A</span>';
+    return '<span style="color:#ccc;font-size:11px">—</span>';
+  };
+  const sectionBlocks=Object.values(sectionMap).map(sec=>{
+    const sIss=sec.items.filter(i=>i.status==='issues').length;
+    const sPass=sec.items.filter(i=>i.status==='good').length;
+    const rows=sec.items.map((i,n)=>`<tr style="border-bottom:1px solid #f4f4f2;${i.status==='issues'?'background:#fffafa;':''}"><td style="padding:7px 10px;font-size:11px;color:#aaa;font-family:monospace">${n+1}</td><td style="padding:7px 10px;font-size:13px;color:#1a1a18;font-weight:${i.status==='issues'?'500':'400'}">${escHtml(i.label)}</td><td style="padding:7px 10px">${statusBadge(i.status)}</td><td style="padding:7px 10px;font-size:12px;color:#555">${i.notes?escHtml(i.notes):'<span style="color:#ddd">—</span>'}</td><td style="padding:7px 10px">${(i.photos||[]).map(p=>`<img src="${p}" style="width:46px;height:38px;object-fit:cover;border-radius:4px;border:1px solid #e8e4db;margin:1px;display:inline-block" onerror="this.style.display='none'">`).join('')}</td></tr>`).join('');
+    return `<div style="margin-bottom:16px;break-inside:avoid"><div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#f7f6f2;border-radius:6px 6px 0 0;border:1px solid #e8e4dc;border-bottom:2px solid ${sIss?'#C0392B':'#0F6E56'}"><span style="font-size:13px;font-weight:600;color:#1a1a18">${escHtml(sec.label)}</span><div style="display:flex;gap:5px">${sIss?`<span style="font-size:11px;font-weight:500;background:#FCEBEB;color:#A32D2D;padding:2px 8px;border-radius:4px">${sIss} issue${sIss>1?'s':''}</span>`:''}<span style="font-size:11px;font-weight:500;background:#E1F5EE;color:#085041;padding:2px 8px;border-radius:4px">${sPass} pass</span></div></div><table style="width:100%;border-collapse:collapse;border:1px solid #e8e4dc;border-top:none"><thead><tr style="background:#fafaf8"><th style="padding:5px 10px;font-size:10px;color:#aaa;font-weight:600;text-align:left;border-bottom:1px solid #e8e4dc">#</th><th style="padding:5px 10px;font-size:10px;color:#aaa;font-weight:600;text-align:left;border-bottom:1px solid #e8e4dc">Item</th><th style="padding:5px 10px;font-size:10px;color:#aaa;font-weight:600;text-align:left;border-bottom:1px solid #e8e4dc">Status</th><th style="padding:5px 10px;font-size:10px;color:#aaa;font-weight:600;text-align:left;border-bottom:1px solid #e8e4dc">Notes</th><th style="padding:5px 10px;font-size:10px;color:#aaa;font-weight:600;text-align:left;border-bottom:1px solid #e8e4dc">Photos</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }).join('');
+  const specialInfo=[];
+  if(cl.ac_thermostat){let s=escHtml(cl.ac_thermostat);if(cl.ac_thermostat==='Other'&&cl.ac_thermostat_notes)s+=': '+escHtml(cl.ac_thermostat_notes);specialInfo.push(`<span><strong>AC Thermostat:</strong> ${s}</span>`);}
+  if(cl.ac_temp)specialInfo.push(`<span><strong>AC Temperature:</strong> ${escHtml(cl.ac_temp)}</span>`);
+  if(cl.ac_mode)specialInfo.push(`<span><strong>AC Mode:</strong> ${escHtml(cl.ac_mode)}</span>`);
+  const reportHTML=`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>PM Checklist — ${cl.unit_location}</title><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'DM Sans',sans-serif;color:#1a1a18;background:#fff;font-size:13px}@media print{.no-print{display:none!important}@page{margin:14mm 12mm;size:A4}}.print-btn{position:fixed;bottom:20px;right:20px;background:#0F6E56;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer}</style></head><body><div style="max-width:880px;margin:0 auto;padding:24px 20px"><div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:2px solid #0F6E56;margin-bottom:16px"><div><div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><div style="width:8px;height:8px;border-radius:50%;background:#1D9E75"></div><span style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#888">The Strand Turks &amp; Caicos</span></div><div style="font-size:20px;font-weight:600;letter-spacing:-0.02em">PM Inspection Checklist — ${cl.checklist_type}</div><div style="font-size:12px;color:#888;margin-top:3px"><strong style="color:#0F6E56;font-family:monospace">${cl.unit_location}</strong> · ${escHtml(cl.building)} · ${escHtml(cl.inspector)}</div></div><div style="text-align:right"><div style="font-size:11px;color:#aaa;margin-bottom:2px">Inspection date</div><div style="font-size:13px;font-weight:500;color:#555">${formatDate(cl.date)}${cl.time_start?' · '+cl.time_start:''}</div></div></div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:${specialInfo.length?'12':'20'}px"><div style="background:#f7f6f2;border-radius:6px;padding:10px 12px"><div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#aaa;margin-bottom:3px">Total Items</div><div style="font-size:20px;font-weight:300">${total}</div></div><div style="background:#F0FDF4;border-radius:6px;padding:10px 12px"><div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#15803D;margin-bottom:3px">Pass</div><div style="font-size:20px;font-weight:300;color:#15803D">${goodCount}</div></div><div style="background:#FEF2F2;border-radius:6px;padding:10px 12px"><div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#B91C1C;margin-bottom:3px">Issues</div><div style="font-size:20px;font-weight:300;color:#B91C1C">${issueCount}</div></div><div style="background:#f7f6f2;border-radius:6px;padding:10px 12px"><div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#aaa;margin-bottom:3px">N/A</div><div style="font-size:20px;font-weight:300">${naCount}</div></div><div style="background:#f7f6f2;border-radius:6px;padding:10px 12px"><div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#aaa;margin-bottom:3px">Pass Rate</div><div style="font-size:20px;font-weight:300">${pct}%</div></div></div>${specialInfo.length?`<div style="background:#f7f6f2;border-radius:6px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#555;display:flex;gap:20px;flex-wrap:wrap">${specialInfo.join('')}</div>`:''}${sectionBlocks}<div style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;display:flex;justify-content:space-between"><div style="font-size:10px;color:#bbb">The Strand Turks &amp; Caicos · PM Inspection Checklist</div><div style="font-size:10px;color:#bbb">Generated ${today}</div></div></div><button class="print-btn no-print" onclick="window.print()">Print / Save as PDF</button></body></html>`;
+  const blob=new Blob([reportHTML],{type:'text/html'});
+  window.open(URL.createObjectURL(blob),'_blank');
+}
+
 
 async function generateChecklistReportFromModal() {
   const unit = document.getElementById('r-cl-unit').value;
