@@ -2669,8 +2669,9 @@ function generateOwnerReport() {
   </div>
 </div>
 <button class="print-btn no-print" onclick="window.print()">Print / Save as PDF</button>
-</body>
-</html>`;
+<\/script>
+<\/body>
+<\/html>`;
 
   const blob = new Blob([reportHTML], {type: 'text/html'});
   const url = URL.createObjectURL(blob);
@@ -3372,7 +3373,7 @@ function generateOwnerReport() {
   </div>
 </div>
 <button class="print-btn no-print" onclick="window.print()">Print / Save as PDF</button>
-</body></html>`;
+`;
 
   const blob = new Blob([reportHTML], {type:'text/html'});
   window.open(URL.createObjectURL(blob), '_blank');
@@ -3398,6 +3399,6 @@ async function generateChecklistReportFromModal() {
     generateChecklistReport(data[0]);
   } catch(e) { showToast('Error: ' + e.message, 'error'); }
 }
-
-
-
+</script>
+</body>
+</html>
